@@ -1,0 +1,7 @@
+<div> Active Groups </div>
+<div *ngIf="groupsList.length > 0">
+<div *ngFor="let group of groupsList">
+    <span>{{group.groupName}}</span> 
+    <button (click)="deleteGroup(group.id)">Delete</button>
+</div>
+</div>

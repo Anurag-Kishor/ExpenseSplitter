@@ -1,0 +1,21 @@
+<form [formGroup]="applyForm" (submit)="submitApplication()">
+    <div>
+        <div class="form-field">
+            <label for="groupName">Group Name</label>
+            <input matInput id="groupName" type="groupName" formControlName="groupName">
+        </div>
+        <!-- <div class="form-field">
+            <mat-form-field appearance="outline">
+                <label for="memberName">Member Name</label>
+                <input matInput id="memberName" type="text" formControlName="memberName">
+            </mat-form-field>
+        </div>
+        <div class="form-field">
+            <mat-form-field appearance="outline">
+                <label for="email">Email</label>
+                <input matInput id="email" type="email" formControlName="email">
+            </mat-form-field>
+        </div> -->
+        <button type="submit" class="primary" mat-raised-button color="accent">Create Group</button>
+    </div>  
+</form>

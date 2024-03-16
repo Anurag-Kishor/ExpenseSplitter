@@ -1,0 +1,5 @@
+<div>
+<button mat-raised-button color="primary" (click)="createGroup()">Create Group + </button>
+<app-create-group *ngIf="toggle" (closeForm)="closeForm($event)"></app-create-group>
+<app-list-group #listGroup></app-list-group>
+</div>
