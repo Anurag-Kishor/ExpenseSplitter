@@ -369,6 +369,14 @@ function calculateExpensesWithSubgroups() {
   }
   
   /**
+   * Constants for styling
+   */
+  const HEADER_BACKGROUND_COLOR = "#4CAF50";
+  const HEADER_FONT_COLOR = "white";
+  const BODY_BACKGROUND_COLOR = "#ffffff";
+  const ALTERNATE_ROW_COLOR = "#f9f9f9";
+
+  /**
    * Styles a table range in the sheet.
    * @param {Object} range - Google Sheets range object.
    */
@@ -385,29 +393,26 @@ function calculateExpensesWithSubgroups() {
   
     // Header styling: Bold, background color, centered text
     header.setFontWeight("bold")
-      .setBackground("#4CAF50")
+      .setBackground(HEADER_BACKGROUND_COLOR)
       .setFontSize(12)
       .setHorizontalAlignment("center")
-      .setFontColor("white");
+      .setFontColor(HEADER_FONT_COLOR);
   
     // Body styling: alternating row colors, smaller font size, centered text
-    body.setFontWeight("normal").setFontSize(10);
-    body.setBackground("#ffffff");
+    body.setFontSize(10);
+    body.setBackground(BODY_BACKGROUND_COLOR);
     body.setHorizontalAlignment("center");
   
     for (let i = 1; i < numRows; i++) {
       if (i % 2 === 1) {
-        body.getCell(i, 1).setBackground("#f9f9f9");  // Alternate row colors
+        body.getCell(i, 1).setBackground(ALTERNATE_ROW_COLOR);  // Alternate row colors
       }
     }
   
     // Row height adjustment
-    for (let i = 0; i < numRows; i++) {
-      sheet.setRowHeight(range.getRow() + i, 30);
-    }
+    sheet.setRowHeights(range.getRow(), numRows, 30);
+    
   
-    // Auto-resize columns to fit content
-    for (let i = 0; i < numCols; i++) {
-      sheet.autoResizeColumn(range.getColumn() + i);
-    }
+    // Resize all columns in the range at once
+    sheet.autoResizeColumns(range.getColumn(), numCols);
   }
