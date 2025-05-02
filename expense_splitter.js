@@ -416,3 +416,5 @@ function calculateExpensesWithSubgroups() {
     // Resize all columns in the range at once
     sheet.autoResizeColumns(range.getColumn(), numCols);
   }
+
+module.exports = { calculateExpensesWithSubgroups };
