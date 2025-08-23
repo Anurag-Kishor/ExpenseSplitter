@@ -16,78 +16,90 @@
  */
 function calculateExpensesWithSubgroups() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const dataSheet = ss.getSheetByName("Sheet1"); // Raw data is always read from active sheet
 
-  // Read all input from your main data sheet
-  const data = dataSheet.getDataRange().getValues();
+  // ===== Step 0: Read from separate sheets =====
+  const membersSheet = ss.getSheetByName("Members");
+  const subgroupsSheet = ss.getSheetByName("Subgroups");
+  const expensesSheet = ss.getSheetByName("Expenses");
 
-  // Create or get output sheet
+  if (!membersSheet || !subgroupsSheet || !expensesSheet) {
+    throw new Error("Missing one of the required sheets: Members, Subgroups, or Expenses");
+  }
+
+  // Members list
+  const headerRow = membersSheet.getRange(1, 1, 1, membersSheet.getLastColumn()).getValues()[0];
+  // Find the column index for "Members" (case-insensitive)
+  const membersColIndex = headerRow.findIndex(h => h.toString().trim().toLowerCase() === "members") + 1;
+  if (membersColIndex === 0) {
+    throw new Error('Could not find "Members" column in Members sheet');
+  }
+  const membersData = membersSheet.getRange(2, membersColIndex, membersSheet.getLastRow() - 1, 1).getValues();
+  const allMembers = new Set(
+    membersData.flat()
+      .filter(Boolean)
+      .map(name => String(name).trim().toLowerCase())
+  );
+
+  // Subgroups
+  const subgroupsData = subgroupsSheet.getRange(2, 2, subgroupsSheet.getLastRow() - 1, 1).getValues();
+  const subgroupMap = new Map();
+  subgroupsData.flat().filter(Boolean).forEach(raw => {
+    const group = raw.split(",").map(n => n.trim().toLowerCase()).filter(Boolean);
+    if (group.length > 0) {
+      subgroupMap.set(group.sort().join(","), new Set(group));
+    }
+  });
+
+  // Expenses (header row included)
+  const expensesData = expensesSheet.getDataRange().getValues();
+  const headers = expensesData[0].map(h => h.toString().toLowerCase().trim());
+  const {
+    expensesStartCol,
+    paidByColIndex,
+    amountColIndex,
+    splitBetweenColIndex
+  } = getColumnIndexesExpenses(headers);
+
+  // ===== Step 1: Assign members to subgroups =====
+  const nameToGroupKey = new Map();
+  const nameToGroup = new Map();
+  assignMembersToSubgroups(allMembers, subgroupMap, nameToGroupKey, nameToGroup);
+
+  // ===== Step 2: Process expenses =====
+  const balances = {};
+  const perItemSplits = {};
+  allMembers.forEach(name => balances[name] = 0);
+
+  processExpenses(expensesData, expensesStartCol, paidByColIndex, amountColIndex, splitBetweenColIndex, allMembers, balances, perItemSplits);
+
+  // ===== Step 3: Create or clear output sheet =====
   const outputSheetName = "Expense Output";
   let outputSheet = ss.getSheetByName(outputSheetName);
   if (!outputSheet) {
     outputSheet = ss.insertSheet(outputSheetName);
   } else {
-    outputSheet.clear(); // Clear all old output
+    outputSheet.clear();
   }
 
-  // Step 1: Find column indexes based on headers
-  const headers = data[0];
-  const normalizedHeaders = headers.map(header => header.toLowerCase());
-  const {
-    membersColIndex,
-    subgroupsColIndex,
-    expensesStartCol,
-    paidByColIndex,
-    amountColIndex,
-    splitBetweenColIndex
-  } = getColumnIndexes(normalizedHeaders);
-
-  // If any required columns are missing, log an error and exit
-  if (membersColIndex === -1 || subgroupsColIndex === -1 || expensesStartCol === -1 || paidByColIndex === -1 || amountColIndex === -1 || splitBetweenColIndex === -1) {
-    Logger.log("One or more required columns are missing.");
-    return;
-  }
-
-  const allMembers = new Set();
-  const subgroupMap = new Map();
-  const nameToGroupKey = new Map();
-  const nameToGroup = new Map();
-
-  // Step 2: Build subgroup clusters
-  buildSubgroupClusters(data, membersColIndex, subgroupsColIndex, allMembers, subgroupMap);
-
-  // Step 3: Assign members to subgroups (or self)
-  assignMembersToSubgroups(allMembers, subgroupMap, nameToGroupKey, nameToGroup);
-
-  // Step 4: Process Expenses
-  const balances = {};
-  const perItemSplits = {};
-  allMembers.forEach(name => balances[name] = 0);
-
-  processExpenses(data, expensesStartCol, paidByColIndex, amountColIndex, splitBetweenColIndex, allMembers, balances, perItemSplits);
-
-  // Step 5: Write tables to sheet
+  // ===== Step 4: Write output =====
   writePerItemSplitTable(outputSheet, allMembers, perItemSplits, balances);
   writeBalanceTable(outputSheet, balances);
   writeSubgroupBalanceTable(outputSheet, subgroupMap, nameToGroupKey, balances);
   writeTransactionTable(outputSheet, subgroupMap, nameToGroupKey, balances);
-  SpreadsheetApp.getActiveSpreadsheet().toast("✅ Expenses calculated successfully!", "Done", 5);
+  writeMemberTransactionTable(outputSheet, balances);
 
+  SpreadsheetApp.getActiveSpreadsheet().toast("✅ Expenses calculated successfully!", "Done", 5);
 }
 
 /**
- * Finds the column indexes for required headers in the spreadsheet.
- * @param {Array} headers - Array of normalized header names.
- * @returns {Object} - Object containing column indexes for required headers.
+ * Finds column indexes for the Expenses sheet
  */
-function getColumnIndexes(headers) {
+function getColumnIndexesExpenses(headers) {
   return {
-    membersColIndex: headers.indexOf('members'),
-    subgroupsColIndex: headers.indexOf('subgroups'),
-    expensesStartCol: headers.indexOf('item'),
-    paidByColIndex: headers.indexOf('paid by'),
-    amountColIndex: headers.indexOf('amount'),
-    splitBetweenColIndex: headers.indexOf('split between')
+    expensesStartCol: headers.indexOf("item"),
+    paidByColIndex: headers.indexOf("paid by"),
+    amountColIndex: headers.indexOf("amount"),
+    splitBetweenColIndex: headers.indexOf("split between")
   };
 }
 
@@ -170,20 +182,28 @@ function processExpenses(data, expensesStartCol, paidByColIndex, amountColIndex,
 
     const paidBy = paidByRaw.trim().toLowerCase();
     let participants = getParticipants(splitBetweenRaw, allMembers);
+    if (participants.length === 0) continue;
 
-    const share = amount / participants.length;
+    // Weighted split
+    const totalWeight = participants.reduce((sum, p) => sum + p.weight, 0);
 
-    participants.forEach(name => {
+    if (!perItemSplits[item]) perItemSplits[item] = {};
+
+    // Subtract share for each participant
+    participants.forEach(({ name, weight }) => {
+      const share = amount * (weight / totalWeight);
       if (!balances.hasOwnProperty(name)) balances[name] = 0;
       balances[name] -= share;
-      if (!perItemSplits[item]) perItemSplits[item] = {};
-      perItemSplits[item][name] = share.toFixed(2);
+      perItemSplits[item][name] = (perItemSplits[item][name] || 0) - share;
     });
 
+    // Add full amount to payer
     if (!balances.hasOwnProperty(paidBy)) balances[paidBy] = 0;
     balances[paidBy] += amount;
+    perItemSplits[item][paidBy] = (perItemSplits[item][paidBy] || 0) + amount;
   }
 }
+
 
 /**
  * Retrieves participants for an expense based on the split-between column.
@@ -192,46 +212,59 @@ function processExpenses(data, expensesStartCol, paidByColIndex, amountColIndex,
  * @returns {Array} - Array of participant names.
  */
 function getParticipants(splitBetweenRaw, allMembers) {
-  let participants = [];
+  const participants = [];
+
   if (splitBetweenRaw && splitBetweenRaw.trim() === "*") {
-    participants = Array.from(allMembers);
-  } else {
-    const names = splitBetweenRaw
-      .split(",")
-      .map(n => n.trim().toLowerCase())
-      .filter(Boolean);
-    participants = names;
+    // All members with equal weight
+    allMembers.forEach(m => participants.push({ name: m, weight: 1 }));
+    return participants;
   }
-  return Array.from(new Set(participants));
+
+  splitBetweenRaw
+    .split(",")
+    .map(n => n.trim().toLowerCase())
+    .filter(Boolean)
+    .forEach(entry => {
+      let [name, weight] = entry.split(":").map(s => s.trim());
+      weight = parseFloat(weight);
+      if (isNaN(weight) || weight <= 0) weight = 1; // Default weight = 1
+      participants.push({ name, weight });
+    });
+
+  // Remove duplicates by name (keep first weight found)
+  const unique = [];
+  const seen = new Set();
+  for (const p of participants) {
+    if (!seen.has(p.name)) {
+      unique.push(p);
+      seen.add(p.name);
+    }
+  }
+
+  return unique;
 }
 
-/**
- * Writes the per-item split table to the sheet.
- * @param {Object} sheet - Google Sheets object.
- * @param {Set} allMembers - Set of all unique members.
- * @param {Object} perItemSplits - Object containing per-item splits.
- * @param {Object} balances - Object containing balances for each member.
- */
+
 function writePerItemSplitTable(sheet, allMembers, perItemSplits, balances) {
   const itemHeader = ["Item", ...Array.from(allMembers).map(name => capitalize(name))];
   const perItemRows = [];
 
-  // Create rows for each item with the corresponding per member share
+  // Create rows for each item with the corresponding per member net share
   for (const item in perItemSplits) {
     const row = [item];
     for (const member of allMembers) {
       const memberShare = perItemSplits[item][member] || 0;
-      row.push(memberShare);
+      row.push(parseFloat(memberShare.toFixed(2)));
     }
     perItemRows.push(row);
   }
 
-  const perItemTotalRow = ["Person's Share"];
+  const perItemTotalRow = ["Person's Net Total"];
   for (const member of allMembers) {
     const totalShare = Object.values(perItemSplits).reduce((sum, itemShares) => {
       return sum + (parseFloat(itemShares[member] || 0));
     }, 0);
-    perItemTotalRow.push(totalShare.toFixed(2));
+    perItemTotalRow.push(parseFloat(totalShare.toFixed(2)));
   }
 
   const fullPerItemTable = [itemHeader, ...perItemRows, perItemTotalRow];
@@ -242,7 +275,28 @@ function writePerItemSplitTable(sheet, allMembers, perItemSplits, balances) {
   const perItemRange = sheet.getRange(startRow, itemStartCol, fullPerItemTable.length, fullPerItemTable[0].length);
   perItemRange.setValues(fullPerItemTable);
   styleTable(perItemRange);
+
+  // Apply color formatting for positive/negative values (skip header col)
+  const numRows = fullPerItemTable.length - 1; // excluding header
+  const numCols = fullPerItemTable[0].length - 1; // excluding "Item" col
+  const valueRange = sheet.getRange(startRow + 1, itemStartCol + 1, numRows, numCols);
+
+  valueRange.setFontWeight("bold"); // make numbers bold
+  const values = valueRange.getValues();
+  for (let r = 0; r < values.length; r++) {
+    for (let c = 0; c < values[r].length; c++) {
+      const cell = valueRange.getCell(r + 1, c + 1);
+      if (values[r][c] > 0) {
+        cell.setFontColor("green");
+      } else if (values[r][c] < 0) {
+        cell.setFontColor("red");
+      } else {
+        cell.setFontColor("black");
+      }
+    }
+  }
 }
+
 
 /**
  * Writes the balance table to the sheet.
@@ -313,7 +367,7 @@ function calculateGroupBalances(subgroupMap, nameToGroupKey, balances) {
  */
 function writeTransactionTable(sheet, subgroupMap, nameToGroupKey, balances) {
   const groupBalances = calculateGroupBalances(subgroupMap, nameToGroupKey, balances);
-  const transactions = generateTransactions(groupBalances);
+  const transactions = generateMinimalSubgroupTransactions(groupBalances);
 
   const transactionStartRow = sheet.getLastRow() + 2;
   const transactionStartCol = 11;
@@ -323,16 +377,59 @@ function writeTransactionTable(sheet, subgroupMap, nameToGroupKey, balances) {
   transactionRange.setValues(transactionOutput);
   styleTable(transactionRange);
 }
-
 /**
- * Generates transactions between subgroups to settle balances.
- * @param {Map} groupBalances - Map of subgroup balances.
- * @returns {Array} - Array of transactions.
+ * Generate minimal member-level transactions to settle balances.
+ * @param {Object} balances - Map of member -> balance (positive = gets money, negative = owes money).
+ * @returns {Array} - Array of transactions [from, to, amount].
  */
-function generateTransactions(groupBalances) {
+function generateMinimalMemberTransactions(balances) {
   const creditors = [];
   const debtors = [];
+
+  // Separate creditors and debtors
+  for (const [name, balance] of Object.entries(balances)) {
+    const val = parseFloat(balance.toFixed(2));
+    if (val > 0.01) creditors.push({ name, amount: val });
+    else if (val < -0.01) debtors.push({ name, amount: -val });
+  }
+
   const transactions = [];
+
+  // Minimize transactions
+  while (debtors.length && creditors.length) {
+    // Find max creditor
+    creditors.sort((a, b) => b.amount - a.amount);
+    debtors.sort((a, b) => b.amount - a.amount);
+
+    const debtor = debtors[0];
+    const creditor = creditors[0];
+
+    const amount = Math.min(debtor.amount, creditor.amount);
+    transactions.push([capitalize(debtor.name), capitalize(creditor.name), amount.toFixed(2)]);
+
+    debtor.amount -= amount;
+    creditor.amount -= amount;
+
+    if (debtor.amount < 0.01) debtors.shift();
+    if (creditor.amount < 0.01) creditors.shift();
+  }
+
+  return transactions;
+}
+
+function writeMemberTransactionTable(sheet, balances) {
+  const transactions = generateMinimalMemberTransactions(balances);
+  const startRow = sheet.getLastRow() + 2;
+  const output = [["From", "To", "Amount (₹)"], ...transactions];
+
+  const range = sheet.getRange(startRow, 11, output.length, 3);
+  range.setValues(output);
+  styleTable(range);
+}
+
+function generateMinimalSubgroupTransactions(groupBalances) {
+  const creditors = [];
+  const debtors = [];
 
   for (const [groupKey, balance] of groupBalances.entries()) {
     const val = parseFloat(balance.toFixed(2));
@@ -340,12 +437,15 @@ function generateTransactions(groupBalances) {
     else if (val < -0.01) debtors.push({ groupKey, amount: -val });
   }
 
-  let i = 0, j = 0;
-  while (i < debtors.length && j < creditors.length) {
-    const debtor = debtors[i];
-    const creditor = creditors[j];
+  const transactions = [];
 
-    const amount = Math.min(debtor.amount, creditor.amount);
+  while (creditors.length && debtors.length) {
+    creditors.sort((a, b) => b.amount - a.amount);
+    debtors.sort((a, b) => b.amount - a.amount);
+
+    const creditor = creditors[0];
+    const debtor = debtors[0];
+    const amount = Math.min(creditor.amount, debtor.amount);
 
     transactions.push([
       formatGroup(debtor.groupKey),
@@ -353,11 +453,11 @@ function generateTransactions(groupBalances) {
       amount.toFixed(2)
     ]);
 
-    debtor.amount -= amount;
     creditor.amount -= amount;
+    debtor.amount -= amount;
 
-    if (debtor.amount < 0.01) i++;
-    if (creditor.amount < 0.01) j++;
+    if (creditor.amount < 0.01) creditors.shift();
+    if (debtor.amount < 0.01) debtors.shift();
   }
 
   return transactions;
